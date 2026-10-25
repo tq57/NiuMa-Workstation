@@ -10,7 +10,7 @@
 | --- | --- |
 | 今日待办 | 今天到底要做什么：逾期 / 今天 / 未来 / 已完成 |
 | 灵感速记 | 随手记下想法，打标签、置顶、一键转成待办 |
-| 项目跟进 | 每个项目当前在做什么、下一步、卡在哪里 |
+| 项目跟进 | 项目目标与需求、当前在做什么、下一步、卡在哪里 |
 | 每周复盘 | 完成数、完成率、顺延次数、卡住项目、日分布、优先级分布 |
 | 置顶区「今天要处理的」 | 逾期任务 + 卡住的项目，跨模块汇总到今日页顶部 |
 
@@ -87,7 +87,7 @@ cx.notify() → Render 重绘
 | 类型 | 关键字段 | 说明 |
 | --- | --- | --- |
 | `Todo` | `title` `priority` `date` `original_date` `project_id` `status` `done_at` `postpone_count` `postpone_log` | `date` 是计划日，可被顺延改写；`original_date` 永远保持第一次设置的日期 |
-| `Project` | `name` `current` `next` `blocker` `status` `blocker_log` | `current / next / blocker` 是卡片上的三个行内编辑字段 |
+| `Project` | `name` `goal` `current` `next` `blocker` `status` `blocker_log` | 名称、目标需求与三项进展在新增/编辑弹框中统一填写；`current / next / blocker` 仍可在卡片上行内编辑 |
 | `Note` | `content` `tags` `pinned` `created_at` `updated_at` | 灵感的标签从 `#tag` 里解析 |
 | `WeeklyReview` | `week_start` `good` `watch` `focus` | 按周一日期聚合的三段文本 |
 | `DataSnapshot` | `projects` `todos` `notes` `reviews` `seeded_at` `last_run_date` | 整库内存镜像，也是一次保存的最小单位 |
@@ -173,6 +173,8 @@ cx.notify() → Render 重绘
 | `mode` / `palette` | 主题模式与当前色板 |
 | `today` | 启动当天的日期 |
 | `quick_input` / `note_input` / `note_edit_input` / `project_input` / `review_inputs` | GPUI 输入框实体（灵感行内编辑与新增项目各有一个专属输入框） |
+| `project_modal` | `None` / `Create` / `Edit(id)`，控制新增与编辑项目弹框 |
+| `project_modal_name / goal / current / next / blocker` | 弹框内五个编辑字段，`goal` 为多行输入 |
 | `default_project` | 快速添加 / 灵感转待办时默认归入的项目（None = 不归入，点击 chip 循环切换） |
 | `project_inputs` | 每个项目三个行内输入框（按项目 id 索引） |
 | `editing_note` | 当前正在行内编辑的灵感 id |
@@ -194,7 +196,7 @@ cx.notify() → Render 重绘
 | --- | --- |
 | 待办 | 快速添加（可选归入项目）、勾选完成/恢复、顺延到明天、优先级轮换、行内切换所属项目、删除（二次确认）、逾期批量顺延（二次确认） |
 | 灵感 | 新增（解析 `#标签`）、行内编辑、置顶/取消置顶、删除（二次确认）、转成待办（归入所选项目）、按标签筛选 |
-| 项目 | 新增项目、行内修改 `current / next / blocker`、按状态筛选、标记完成/恢复、暂停/恢复推进、删除（二次确认，关联待办解绑）；状态由卡点自动推导 |
+| 项目 | 新增/编辑弹框（名称、目标需求、当前、下一步、卡点）、行内修改 `current / next / blocker`、按状态筛选、标记完成/恢复、暂停/恢复推进、删除（二次确认，关联待办解绑）；状态由卡点自动推导 |
 | 复盘 | 三段文本保存、上一周/下一周切换 |
 | 全局 | 切换主题（写 config.toml）、手动备份、导出 JSON、导入 JSON（覆盖前二次确认）、清理测试数据（输入「清空」后执行）、撤销最近一次完成/顺延（5 秒内） |
 

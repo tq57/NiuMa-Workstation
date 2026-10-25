@@ -1,13 +1,13 @@
 //! 项目跟进视图：进度、当前 / 下一步 / 卡点行内编辑，卡点驱动状态。
 
-use gpui_kit::component::input::Input;
+use gpui_kit::component::input::{Input, Textarea, TextareaState};
 use gpui_kit::prelude::*;
 use gpui_kit::*;
 use niu_ma_workstation_core::domain::project::{progress, sort_projects, sync_status};
 use niu_ma_workstation_core::domain::types::{Project, ProjectStatus, TodoStatus};
 
 use super::{bar, card, ghost_button, hint, pill, primary_button};
-use crate::state::{Workspace, PROJECT_FILTERS};
+use crate::state::{ProjectModalMode, Workspace, PROJECT_FILTERS};
 use crate::theme::Palette;
 
 impl Workspace {
@@ -85,8 +85,7 @@ impl Workspace {
                         primary_button("＋ 加项目", &p)
                             .id("project-add")
                             .on_click(cx.listener(|this, _, window, cx| {
-                                let input = this.project_input.clone();
-                                this.submit_project(&input, window, cx);
+                                this.open_project_modal(window, cx);
                             })),
                     ),
             )
@@ -185,6 +184,7 @@ impl Workspace {
             linked_rows.push(hint("暂无关联待办", &p));
         }
 
+        let id_edit = project.id.clone();
         let id_done = project.id.clone();
         let id_pause = project.id.clone();
         let id_delete = project.id.clone();
@@ -234,6 +234,28 @@ impl Workspace {
                     }),
             )
             .child(bar(rate, p.teal, p.line2))
+            .when(!project.goal.trim().is_empty(), |el| {
+                el.child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.))
+                        .child(
+                            div()
+                                .text_size(px(10.5))
+                                .text_color(rgb(p.ink3))
+                                .child("目标 / 需求"),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .text_size(px(12.))
+                                .line_height(px(18.))
+                                .text_color(rgb(p.ink2))
+                                .child(SharedString::from(project.goal.clone())),
+                        ),
+                )
+            })
             .children(fields)
             .child(
                 div()
@@ -249,6 +271,13 @@ impl Workspace {
                     .items_center()
                     .gap(px(6.))
                     .mt(px(2.))
+                    .child(
+                        ghost_button("编辑", p.ink2, &p)
+                            .id(SharedString::from(format!("pedit-{id_edit}")))
+                            .on_click(cx.listener(move |this, _, window, cx| {
+                                this.open_project_edit_modal(&id_edit, window, cx)
+                            })),
+                    )
                     .child(
                         ghost_button(
                             if status == ProjectStatus::Done {
@@ -303,6 +332,76 @@ impl Workspace {
                     ),
             )
     }
+
+    /// 新增 / 编辑项目弹框：名称、目标需求与三项进展统一编辑。
+    pub(crate) fn render_project_modal(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let p = self.palette;
+        let is_edit = matches!(self.project_modal, Some(ProjectModalMode::Edit(_)));
+        let title = if is_edit { "编辑项目" } else { "新增项目" };
+        let subtitle = if is_edit {
+            "修改项目名称、目标需求与整体进展"
+        } else {
+            "先补齐项目目标与整体情况，创建后三项进展仍可在卡片上直接改"
+        };
+        let action = if is_edit { "保存修改" } else { "创建项目" };
+
+        div()
+            .id("project-modal-backdrop")
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000099))
+            .child(
+                card(&p)
+                    .w(px(560.))
+                    .p(px(22.))
+                    .flex()
+                    .flex_col()
+                    .gap(px(12.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .gap(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(16.))
+                                    .font_weight(FontWeight::BOLD)
+                                    .child(title),
+                            )
+                            .child(div().text_size(px(11.5)).text_color(rgb(p.ink3)).child(subtitle)),
+                    )
+                    .child(modal_input("项目名称", &self.project_modal_name, &p))
+                    .child(modal_textarea("目标 / 需求", &self.project_modal_goal, &p))
+                    .child(modal_input("当前进展", &self.project_modal_current, &p))
+                    .child(modal_input("下一步", &self.project_modal_next, &p))
+                    .child(modal_input("卡点", &self.project_modal_blocker, &p))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .justify_end()
+                            .gap(px(8.))
+                            .child(
+                                ghost_button("取消", p.ink2, &p)
+                                    .id("pm-cancel")
+                                    .on_click(cx.listener(|this, _, _, cx| {
+                                        this.close_project_modal(cx)
+                                    })),
+                            )
+                            .child(
+                                primary_button(action, &p)
+                                    .id("pm-save")
+                                    .on_click(cx.listener(|this, _, window, cx| {
+                                        this.save_project_modal(window, cx)
+                                    })),
+                            ),
+                    ),
+            )
+            .into_any_element()
+    }
 }
 
 fn field_row(label: &'static str, input: &Entity<gpui_kit::component::input::InputState>, p: &Palette) -> Div {
@@ -330,6 +429,65 @@ fn field_row(label: &'static str, input: &Entity<gpui_kit::component::input::Inp
                     Input::new(input)
                         .appearance(false)
                         .text_size(px(12.))
+                        .w_full(),
+                ),
+        )
+}
+
+/// 弹框里的单行输入：上方标签 + 描边输入框
+fn modal_input(label: &'static str, input: &Entity<gpui_kit::component::input::InputState>, p: &Palette) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(p.ink3))
+                .child(label),
+        )
+        .child(
+            div()
+                .px(px(9.))
+                .py(px(5.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(rgb(p.line))
+                .bg(rgb(p.paper))
+                .child(
+                    Input::new(input)
+                        .appearance(false)
+                        .text_size(px(12.5))
+                        .w_full(),
+                ),
+        )
+}
+
+/// 弹框里的多行目标输入
+fn modal_textarea(label: &'static str, input: &Entity<TextareaState>, p: &Palette) -> Div {
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(4.))
+        .child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(p.ink3))
+                .child(label),
+        )
+        .child(
+            div()
+                .px(px(9.))
+                .py(px(5.))
+                .rounded(px(7.))
+                .border_1()
+                .border_color(rgb(p.line))
+                .bg(rgb(p.paper))
+                .child(
+                    Textarea::new(input)
+                        .appearance(false)
+                        .text_size(px(12.5))
+                        .h(px(82.))
                         .w_full(),
                 ),
         )

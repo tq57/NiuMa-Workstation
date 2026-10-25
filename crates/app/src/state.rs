@@ -54,6 +54,13 @@ pub(crate) struct ProjectInputs {
     pub(crate) blocker: Entity<InputState>,
 }
 
+/// 项目弹框模式：新增，或编辑已有项目。
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub(crate) enum ProjectModalMode {
+    Create,
+    Edit(String),
+}
+
 /// 项目页状态筛选
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum ProjectFilter {
@@ -149,10 +156,13 @@ pub struct Workspace {
     pub(crate) note_edit_input: Entity<InputState>,
     /// 当前正在编辑的灵感 id
     pub(crate) editing_note: Option<String>,
-    /// 项目目标 / 需求的多行编辑框（同一时间只编辑一个项目）
-    pub(crate) goal_edit_input: Entity<TextareaState>,
-    /// 当前正在编辑目标的项目 id
-    pub(crate) editing_goal: Option<String>,
+    /// 新增 / 编辑项目弹框；None = 未打开
+    pub(crate) project_modal: Option<ProjectModalMode>,
+    pub(crate) project_modal_name: Entity<InputState>,
+    pub(crate) project_modal_goal: Entity<TextareaState>,
+    pub(crate) project_modal_current: Entity<InputState>,
+    pub(crate) project_modal_next: Entity<InputState>,
+    pub(crate) project_modal_blocker: Entity<InputState>,
     pub(crate) project_input: Entity<InputState>,
     /// 项目页状态筛选
     pub(crate) project_filter: ProjectFilter,
@@ -204,12 +214,24 @@ impl Workspace {
             InputState::new(window, cx).placeholder("随手记一条灵感，可用 #标签 标记")
         });
         let project_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("新项目名称，回车添加")
+            InputState::new(window, cx).placeholder("新项目名称，回车打开详情")
         });
         let note_edit_input = cx.new(|cx| InputState::new(window, cx));
-        let goal_edit_input = cx.new(|cx| {
+        let project_modal_name = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("项目名称（必填）")
+        });
+        let project_modal_goal = cx.new(|cx| {
             TextareaState::new(window, cx)
-                .placeholder("写下这个项目的目标 / 需求 / 要改造的内容，点击别处保存")
+                .placeholder("项目目标、需求、要改造的内容或背景")
+        });
+        let project_modal_current = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("当前在推进什么")
+        });
+        let project_modal_next = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("下一步是什么")
+        });
+        let project_modal_blocker = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("卡在哪里（留空 = 进行中）")
         });
         let clear_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("输入「清空」确认")
@@ -255,9 +277,9 @@ impl Workspace {
         subscriptions.push(cx.subscribe_in(
             &project_input,
             window,
-            |this, input, event: &InputEvent, window, cx| {
+            |this, _input, event: &InputEvent, window, cx| {
                 if matches!(event, InputEvent::PressEnter { .. }) {
-                    this.submit_project(input, window, cx);
+                    this.open_project_modal(window, cx);
                 }
             },
         ));
@@ -270,15 +292,23 @@ impl Workspace {
                 }
             },
         ));
-        subscriptions.push(cx.subscribe_in(
-            &goal_edit_input,
-            window,
-            |this, _input, event: &InputEvent, _window, cx| {
-                if matches!(event, InputEvent::Blur) {
-                    this.save_goal(cx);
-                }
-            },
-        ));
+        // 弹框内单行字段回车即保存；多行目标输入回车用于换行
+        for entity in [
+            &project_modal_name,
+            &project_modal_current,
+            &project_modal_next,
+            &project_modal_blocker,
+        ] {
+            subscriptions.push(cx.subscribe_in(
+                entity,
+                window,
+                |this, _input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        this.save_project_modal(window, cx);
+                    }
+                },
+            ));
+        }
         // 清空输入框内容变化时重绘，让确认按钮的可用态即时更新
         subscriptions.push(cx.subscribe_in(
             &clear_input,
@@ -317,8 +347,12 @@ impl Workspace {
             note_input,
             note_edit_input,
             editing_note: None,
-            goal_edit_input,
-            editing_goal: None,
+            project_modal: None,
+            project_modal_name,
+            project_modal_goal,
+            project_modal_current,
+            project_modal_next,
+            project_modal_blocker,
             project_input,
             project_filter: ProjectFilter::All,
             confirm_delete: None,
@@ -662,57 +696,144 @@ impl Workspace {
         self.flash("已记录灵感", cx);
     }
 
-    /// 新增项目：三字段留空、状态进行中，立刻生成对应的行内编辑输入框
-    pub(crate) fn submit_project(
+    /// 回车 /「＋ 加项目」：打开新增项目弹框，带入快捷输入框里的名称
+    pub(crate) fn open_project_modal(
         &mut self,
-        input: &Entity<InputState>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let name = input.read(cx).value().trim().to_string();
+        let name = self.project_input.read(cx).value().trim().to_string();
+        self.project_modal = Some(ProjectModalMode::Create);
+        self.fill_project_modal(&name, "", "", "", "", window, cx);
+        self.confirm_delete = None;
+        cx.notify();
+    }
+
+    /// 项目卡「编辑」：打开同一个弹框并预填当前内容
+    pub(crate) fn open_project_edit_modal(
+        &mut self,
+        id: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(project) = self.data.projects.iter().find(|p| p.id == id).cloned() else {
+            return;
+        };
+        self.project_modal = Some(ProjectModalMode::Edit(id.to_string()));
+        self.fill_project_modal(
+            &project.name,
+            &project.goal,
+            &project.current,
+            &project.next,
+            &project.blocker,
+            window,
+            cx,
+        );
+        self.confirm_delete = None;
+        cx.notify();
+    }
+
+    fn fill_project_modal(
+        &mut self,
+        name: &str,
+        goal: &str,
+        current: &str,
+        next: &str,
+        blocker: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.project_modal_name.update(cx, |state, cx| {
+            state.set_value(name, window, cx);
+            state.focus(window, cx);
+        });
+        self.project_modal_goal
+            .update(cx, |state, cx| state.set_value(goal, window, cx));
+        self.project_modal_current
+            .update(cx, |state, cx| state.set_value(current, window, cx));
+        self.project_modal_next
+            .update(cx, |state, cx| state.set_value(next, window, cx));
+        self.project_modal_blocker
+            .update(cx, |state, cx| state.set_value(blocker, window, cx));
+    }
+
+    pub(crate) fn close_project_modal(&mut self, cx: &mut Context<Self>) {
+        self.project_modal = None;
+        cx.notify();
+    }
+
+    /// 弹框保存：新增时创建项目，编辑时更新名称与总体内容
+    pub(crate) fn save_project_modal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mode) = self.project_modal.clone() else {
+            return;
+        };
+        let name = self
+            .project_modal_name
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         if name.is_empty() {
+            self.notice = Some("项目名称不能为空".into());
+            self.project_modal_name
+                .update(cx, |state, cx| state.focus(window, cx));
+            cx.notify();
             return;
         }
+        let goal = self.project_modal_goal.read(cx).value().trim().to_string();
+        let current = self
+            .project_modal_current
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
+        let next = self.project_modal_next.read(cx).value().trim().to_string();
+        let blocker = self
+            .project_modal_blocker
+            .read(cx)
+            .value()
+            .trim()
+            .to_string();
         let now = self.now();
-        let project = new_project(next_id("p"), name, now);
-        let pid = project.id.clone();
 
-        let current = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("当前在推进什么")
-        });
-        let next = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("下一步是什么")
-        });
-        let blocker = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("卡在哪里（留空 = 进行中）")
-        });
-        for (field, entity) in [
-            (Field::Current, &current),
-            (Field::Next, &next),
-            (Field::Blocker, &blocker),
-        ] {
-            let pid = pid.clone();
-            self._subscriptions.push(cx.subscribe_in(
-                entity,
-                window,
-                move |this, _input, event: &InputEvent, _window, cx| {
-                    if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
-                        this.save_project_field(&pid, field, cx);
-                    }
-                },
-            ));
+        match mode {
+            ProjectModalMode::Create => {
+                let mut project = new_project(next_id("p"), name, now);
+                apply_project_details(&mut project, goal, current, next, blocker, now);
+
+                let (inputs, subscriptions) =
+                    spawn_project_inputs(window, cx, std::slice::from_ref(&project));
+                self.project_inputs.extend(inputs);
+                self._subscriptions.extend(subscriptions);
+                self.data.projects.push(project);
+                self.project_input
+                    .update(cx, |state, cx| state.set_value("", window, cx));
+                self.project_modal = None;
+                self.flash("已新增项目", cx);
+            }
+            ProjectModalMode::Edit(id) => {
+                if let Some(project) = self.data.projects.iter_mut().find(|p| p.id == id) {
+                    project.name = name;
+                    apply_project_details(project, goal, current, next, blocker, now);
+                }
+                if let Some(inputs) = self.project_inputs.get(&id) {
+                    let current = self.project_modal_current.read(cx).value().to_string();
+                    let next = self.project_modal_next.read(cx).value().to_string();
+                    let blocker = self.project_modal_blocker.read(cx).value().to_string();
+                    inputs
+                        .current
+                        .update(cx, |state, cx| state.set_value(&current, window, cx));
+                    inputs
+                        .next
+                        .update(cx, |state, cx| state.set_value(&next, window, cx));
+                    inputs
+                        .blocker
+                        .update(cx, |state, cx| state.set_value(&blocker, window, cx));
+                }
+                self.project_modal = None;
+                self.flash("已更新项目", cx);
+            }
         }
-        self.project_inputs.insert(
-            pid,
-            ProjectInputs {
-                current,
-                next,
-                blocker,
-            },
-        );
-        self.data.projects.push(project);
-        input.update(cx, |state, cx| state.set_value("", window, cx));
-        self.flash("已新增项目", cx);
     }
 
     pub(crate) fn toggle_pin(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -796,46 +917,6 @@ impl Workspace {
     }
 
     /* ---------------- 项目动作 ---------------- */
-
-    /// 点击项目卡上的目标摘要，展开为多行编辑
-    pub(crate) fn start_edit_goal(
-        &mut self,
-        id: &str,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(goal) = self
-            .data
-            .projects
-            .iter()
-            .find(|p| p.id == id)
-            .map(|p| p.goal.clone())
-        else {
-            return;
-        };
-        self.editing_goal = Some(id.to_string());
-        self.goal_edit_input.update(cx, |state, cx| {
-            state.set_value(goal, window, cx);
-            state.focus(window, cx);
-        });
-        cx.notify();
-    }
-
-    /// 目标编辑框失焦时落库
-    pub(crate) fn save_goal(&mut self, cx: &mut Context<Self>) {
-        let Some(id) = self.editing_goal.take() else {
-            return;
-        };
-        let goal = self.goal_edit_input.read(cx).value().trim().to_string();
-        let now = self.now();
-        if let Some(project) = self.data.projects.iter_mut().find(|p| p.id == id) {
-            if project.goal != goal {
-                project.goal = goal;
-                project.updated_at = now;
-            }
-        }
-        self.commit(cx);
-    }
 
     fn save_project_field(
         &mut self,
@@ -1135,6 +1216,7 @@ impl Workspace {
         self.confirm_delete = None;
         self.confirm_postpone_all = false;
         self.editing_note = None;
+        self.project_modal = None;
         self.tag_filter = None;
         self.show_done = false;
         self.week_offset = 0;
@@ -1246,6 +1328,23 @@ fn parse_tags(content: &str) -> Vec<String> {
     tags
 }
 
+/// 把弹框里的项目总体内容写入项目，并按卡点重新同步状态。
+fn apply_project_details(
+    project: &mut Project,
+    goal: String,
+    current: String,
+    next: String,
+    blocker: String,
+    now: NaiveDateTime,
+) {
+    project.goal = goal;
+    project.current = current;
+    project.next = next;
+    project.blocker = blocker;
+    project.updated_at = now;
+    project.status = sync_status(project);
+}
+
 /// 新项目的初始形态：三个字段为空、进行中、没有卡点流水。
 fn new_project(id: String, name: String, now: NaiveDateTime) -> Project {
     Project {
@@ -1305,11 +1404,17 @@ impl Render for Workspace {
         };
         let notice = self.notice.clone();
         let undo_available = self.undo.is_some();
+        let project_modal = if self.project_modal.is_some() {
+            Some(self.render_project_modal(cx))
+        } else {
+            None
+        };
 
         div()
             .flex()
             .flex_col()
             .size_full()
+            .relative()
             .bg(rgb(palette.bg))
             .text_color(rgb(palette.ink))
             .child(titlebar)
@@ -1366,6 +1471,7 @@ impl Render for Workspace {
                             }),
                     ),
             )
+            .when_some(project_modal, |el, modal| el.child(modal))
     }
 }
 
@@ -1725,7 +1831,7 @@ mod tests {
     use chrono::NaiveDate;
     use niu_ma_workstation_core::domain::types::{DataSnapshot, ProjectStatus};
 
-    use super::{cleared_snapshot, new_project, next_project, DoneRange};
+    use super::{apply_project_details, cleared_snapshot, new_project, next_project, DoneRange};
 
     #[test]
     fn cleared_snapshot_is_empty_but_keeps_seed_marker() {
@@ -1759,6 +1865,40 @@ mod tests {
         assert!(project.next.is_empty());
         assert!(project.blocker.is_empty());
         assert!(project.blocker_log.is_empty());
+    }
+
+    #[test]
+    fn project_details_update_all_fields_and_status() {
+        let now = NaiveDate::from_ymd_opt(2026, 10, 22)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap();
+        let mut project = new_project("p1".into(), "测试项目".into(), now);
+
+        apply_project_details(
+            &mut project,
+            "重构导出链路".into(),
+            "梳理旧接口".into(),
+            "补迁移脚本".into(),
+            "等数据组确认".into(),
+            now,
+        );
+
+        assert_eq!(project.goal, "重构导出链路");
+        assert_eq!(project.current, "梳理旧接口");
+        assert_eq!(project.next, "补迁移脚本");
+        assert_eq!(project.blocker, "等数据组确认");
+        assert_eq!(project.status, ProjectStatus::Blocked);
+
+        apply_project_details(
+            &mut project,
+            "重构导出链路".into(),
+            "梳理旧接口".into(),
+            "补迁移脚本".into(),
+            String::new(),
+            now,
+        );
+        assert_eq!(project.status, ProjectStatus::Active);
     }
 
     #[test]
