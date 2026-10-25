@@ -9,6 +9,7 @@ mod state;
 mod storage;
 mod theme;
 mod tray;
+mod update;
 mod views;
 mod win32;
 

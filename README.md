@@ -47,6 +47,15 @@ pwsh -File scripts\package.ps1
 
 首次构建需编译 GPUI 全量依赖，耗时较长；之后增量构建通常几十秒。
 
+## 更新
+
+侧栏左下角显示当前版本，点「检查更新」会读取 GitHub Release 的 `latest.json`。启动 6 秒后也会静默检查一次，有新版本时在侧栏提示。
+
+- **安装版**：点「下载更新」→ 自动校验 SHA-256 → 点「安装并重启」；安装前自动备份数据库，装完自动拉起新版本。
+- **绿色版**：只提示并打开下载页，手动替换程序文件，数据目录不受影响。
+
+发布新版本：改 `crates\app\Cargo.toml` 的 `version`，执行 `pwsh -File scripts\package.ps1`，把 `dist\` 里的 `NiuMa-Workstation-<版本>-setup.exe`、`-portable.zip` 和 `latest.json` 一起上传到 GitHub Release，并发布为最新的正式版（非草稿 / 非预发布）。
+
 ## 数据放在哪
 
 | 形态 | 数据目录 |
@@ -93,7 +102,7 @@ NiuMa-Workstation/
 ## 测试
 
 - `cargo test -p niu_ma_workstation_core`：11 个领域测试（分区、排序、项目排序、顺延、进度、状态联动、周统计、周边界）
-- `cargo test -p niu_ma_workstation`：22 个应用测试（存储往返、v1→v2 迁移、备份保留 30 份、每日备份去重、旧数据目录迁移、种子回归、清理快照、JSON 往返、绿色版数据目录切换等）
+- `cargo test -p niu_ma_workstation`：29 个应用测试（存储往返、v1→v2 迁移、备份保留 30 份、每日备份去重、旧数据目录迁移、种子回归、清理快照、JSON 往返、绿色版数据目录切换、更新清单解析与版本比较、SHA-256 校验等）
 
 改动领域逻辑时必须保持种子基线数字不变。
 

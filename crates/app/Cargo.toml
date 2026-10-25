@@ -31,6 +31,12 @@ toml = "0.8"
 # 文件选择对话框（导出 / 导入 JSON）
 rfd = "0.16"
 
+# 检查更新：HTTP 拉取清单 / 下载安装包，SHA-256 校验
+ureq = { version = "2.12", features = ["native-certs", "proxy-from-env"] }
+semver = "1"
+sha2 = "0.10"
+winreg = "0.56"
+
 # 错误处理
 anyhow = "1"
 

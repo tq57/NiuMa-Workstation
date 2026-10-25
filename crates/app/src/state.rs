@@ -19,6 +19,7 @@ use niu_ma_workstation_core::domain::types::*;
 use crate::config::Config;
 use crate::storage::Storage;
 use crate::theme::{Palette, ThemeMode};
+use crate::update::{self, AvailableUpdate, UpdateStatus};
 
 /// 左侧导航的四个模块
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -164,6 +165,10 @@ pub struct Workspace {
     pub(crate) project_modal_next: Entity<InputState>,
     pub(crate) project_modal_blocker: Entity<InputState>,
     pub(crate) project_input: Entity<InputState>,
+    /// 更新弹框是否打开
+    pub(crate) update_modal: bool,
+    /// 更新流程状态；None = 尚未检查
+    pub(crate) update_status: Option<UpdateStatus>,
     /// 项目页状态筛选
     pub(crate) project_filter: ProjectFilter,
     /// 删除类操作的二次确认目标（待办 / 项目 / 灵感共用）
@@ -334,7 +339,7 @@ impl Workspace {
         let (project_inputs, project_subs) = spawn_project_inputs(window, cx, &data.projects);
         subscriptions.extend(project_subs);
 
-        Self {
+        let workspace = Self {
             storage,
             data,
             page: Page::Today,
@@ -354,6 +359,8 @@ impl Workspace {
             project_modal_next,
             project_modal_blocker,
             project_input,
+            update_modal: false,
+            update_status: None,
             project_filter: ProjectFilter::All,
             confirm_delete: None,
             confirm_postpone_all: false,
@@ -372,7 +379,10 @@ impl Workspace {
             project_inputs,
             notice: None,
             _subscriptions: subscriptions,
-        }
+        };
+        // 启动后延迟检查一次，避免和首屏渲染抢资源
+        Self::schedule_update_check(cx);
+        workspace
     }
 
     /* ---------------- 通用 ---------------- */
@@ -916,6 +926,140 @@ impl Workspace {
         self.flash("已转为今天的任务", cx);
     }
 
+    /* ---------------- 检查更新 ---------------- */
+
+    fn schedule_update_check(cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(StdDuration::from_secs(6))
+                .await;
+            let result = cx
+                .background_executor()
+                .spawn(async { update::check_latest() })
+                .await;
+            let _ = this.update(cx, |this, cx| this.finish_update_check(result, false, cx));
+        })
+        .detach();
+    }
+
+    /// 手动检查：打开弹框并立即请求清单。
+    pub(crate) fn check_update(&mut self, cx: &mut Context<Self>) {
+        self.update_modal = true;
+        self.update_status = Some(UpdateStatus::Checking);
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async { update::check_latest() })
+                .await;
+            let _ = this.update(cx, |this, cx| this.finish_update_check(result, true, cx));
+        })
+        .detach();
+    }
+
+    fn finish_update_check(
+        &mut self,
+        result: Result<Option<AvailableUpdate>, anyhow::Error>,
+        manual: bool,
+        cx: &mut Context<Self>,
+    ) {
+        match result {
+            Ok(Some(update)) => {
+                if !manual {
+                    self.notice = Some(format!(
+                        "发现新版本 v{}，点左下角「检查更新」查看",
+                        update.version
+                    ));
+                }
+                self.update_status = Some(UpdateStatus::Available(update));
+            }
+            Ok(None) => {
+                self.update_status = if manual {
+                    Some(UpdateStatus::UpToDate)
+                } else {
+                    None
+                };
+            }
+            Err(err) => {
+                self.update_status = if manual {
+                    Some(UpdateStatus::Failed(format!("{err:#}")))
+                } else {
+                    None
+                };
+            }
+        }
+        cx.notify();
+    }
+
+    pub(crate) fn close_update_modal(&mut self, cx: &mut Context<Self>) {
+        self.update_modal = false;
+        cx.notify();
+    }
+
+    /// 下载安装包，成功后等待用户点「安装并重启」。
+    pub(crate) fn download_update(&mut self, cx: &mut Context<Self>) {
+        let Some(UpdateStatus::Available(update)) = self.update_status.clone() else {
+            return;
+        };
+        let version = update.version.clone();
+        self.update_status = Some(UpdateStatus::Downloading {
+            version: version.clone(),
+        });
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let result = cx
+                .background_executor()
+                .spawn(async move { update::download_installer(&update) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.update_status = Some(match result {
+                    Ok(installer) => UpdateStatus::Ready {
+                        version,
+                        installer,
+                    },
+                    Err(err) => UpdateStatus::Failed(format!("下载失败：{err:#}")),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 半自动安装：先备份数据库，再启动安装包并退出应用。
+    pub(crate) fn install_update(&mut self, cx: &mut Context<Self>) {
+        let Some(UpdateStatus::Ready { version, installer }) = self.update_status.clone() else {
+            return;
+        };
+        if update::is_portable() {
+            self.update_status = Some(UpdateStatus::Failed(
+                "绿色版不支持自动安装，请手动下载替换".into(),
+            ));
+            cx.notify();
+            return;
+        }
+        let stamp = format!("{}-pre-update", self.now().format("%Y%m%d-%H%M%S"));
+        let _ = self.storage.backup_now(&stamp);
+        match update::launch_installer(&installer) {
+            Ok(()) => {
+                self.update_modal = false;
+                self.notice = Some(format!("正在安装 v{version}，应用即将重启"));
+                cx.notify();
+                cx.quit();
+            }
+            Err(err) => {
+                self.update_status = Some(UpdateStatus::Failed(format!("启动安装包失败：{err:#}")));
+                cx.notify();
+            }
+        }
+    }
+
+    pub(crate) fn open_releases_page(&mut self, cx: &mut Context<Self>) {
+        if let Err(err) = update::open_releases_page() {
+            self.update_status = Some(UpdateStatus::Failed(format!("打开下载页失败：{err:#}")));
+            cx.notify();
+        }
+    }
+
     /* ---------------- 项目动作 ---------------- */
 
     fn save_project_field(
@@ -1409,6 +1553,11 @@ impl Render for Workspace {
         } else {
             None
         };
+        let update_modal = if self.update_modal {
+            Some(self.render_update_modal(cx))
+        } else {
+            None
+        };
 
         div()
             .flex()
@@ -1472,6 +1621,7 @@ impl Render for Workspace {
                     ),
             )
             .when_some(project_modal, |el, modal| el.child(modal))
+            .when_some(update_modal, |el, modal| el.child(modal))
     }
 }
 
@@ -1804,6 +1954,37 @@ impl Workspace {
                                         ),
                                 ),
                         )
+                    }),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px(px(12.))
+                    .py(px(4.))
+                    .child(
+                        div()
+                            .text_size(px(10.5))
+                            .text_color(rgb(palette.ink3))
+                            .child(format!("v{}", update::CURRENT_VERSION)),
+                    )
+                    .child({
+                        let (label, color) = match &self.update_status {
+                            Some(UpdateStatus::Available(update)) => {
+                                (format!("发现 v{}", update.version), palette.teal)
+                            }
+                            Some(UpdateStatus::Checking) => ("检查中…".into(), palette.ink3),
+                            _ => ("检查更新".into(), palette.ink3),
+                        };
+                        div()
+                            .cursor_pointer()
+                            .text_size(px(11.))
+                            .text_color(rgb(color))
+                            .hover(|el| el.text_color(rgb(palette.teal)))
+                            .child(label)
+                            .id("check-update")
+                            .on_click(cx.listener(|this, _, _, cx| this.check_update(cx)))
                     }),
             )
             .child(

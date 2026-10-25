@@ -43,8 +43,9 @@ NiuMa-Workstation/
 │  └─ app/                        # 二进制 NiuMa-Workstation
 │     ├─ src/main.rs              # 启动：配置 → DB → 种子 → 顺延 → 窗口
 │     ├─ src/state.rs             # Workspace 状态、全部动作、根视图/标题栏/侧栏
-│     ├─ src/views/               # 四个页面（today / notes / projects / review）
+│     ├─ src/views/               # 四个页面（today / notes / projects / review）+ 更新弹框
 │     ├─ src/storage/             # SQLite：schema / repo / backup
+│     ├─ src/update.rs            # 检查 GitHub Release、下载并校验安装包
 │     ├─ src/theme.rs             # 双主题色板
 │     ├─ src/config.rs            # config.toml 读写（当前只有主题）
 │     ├─ src/seed.rs              # 首次启动的演示数据 + 回归断言
@@ -189,6 +190,7 @@ cx.notify() → Render 重绘
 | `tag_filter` / `show_done` / `week_offset` | 各页面的筛选与翻周状态 |
 | `notice` | 右下角 toast 文案 |
 | `clear_confirm` / `clear_input` | 「清理测试数据」的确认态与「输入清空」输入框 |
+| `update_modal` / `update_status` | 检查更新弹框开关与流程状态（检查中 / 已是最新 / 可更新 / 下载中 / 待安装 / 失败） |
 
 动作按模块分组：
 
@@ -198,7 +200,7 @@ cx.notify() → Render 重绘
 | 灵感 | 新增（解析 `#标签`）、行内编辑、置顶/取消置顶、删除（二次确认）、转成待办（归入所选项目）、按标签筛选 |
 | 项目 | 新增/编辑弹框（名称、目标需求、当前、下一步、卡点）、行内修改 `current / next / blocker`、按状态筛选、标记完成/恢复、暂停/恢复推进、删除（二次确认，关联待办解绑）；状态由卡点自动推导 |
 | 复盘 | 三段文本保存、上一周/下一周切换 |
-| 全局 | 切换主题（写 config.toml）、手动备份、导出 JSON、导入 JSON（覆盖前二次确认）、清理测试数据（输入「清空」后执行）、撤销最近一次完成/顺延（5 秒内） |
+| 全局 | 切换主题（写 config.toml）、手动备份、导出 JSON、导入 JSON（覆盖前二次确认）、清理测试数据（输入「清空」后执行）、撤销最近一次完成/顺延（5 秒内）、检查并安装更新（`update.rs`：安装版半自动，绿色版只提示） |
 
 所有动作统一走 `commit()`：保存成功就重绘；保存失败则把错误写进 `notice`，不静默吞掉。
 
@@ -255,21 +257,25 @@ cargo test -p niu_ma_workstation_core -p niu_ma_workstation
 powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 ```
 
-打包脚本做三件事：
+打包脚本做四件事：
 
 1. 用 `RUSTFLAGS="-C target-feature=+crt-static"` 构建 release，静态链接 CRT，干净机器不依赖 VC++ 运行库；release 版带 `windows_subsystem = "windows"`，不弹控制台。
 2. 生成绿色版目录 + zip：`exe` + `portable.flag`。
 3. 调用 Inno Setup 生成安装版（当前用户安装、开始菜单、可选桌面图标、卸载器）。
+4. 生成 `dist\latest.json`（版本、说明、安装包地址、SHA-256、大小），供应用内检查更新。
+
+安装包以 `/AUTOUPDATE=1` 调起时，装完会通过 `[Code] IsAutoUpdate` 自动拉起新版本；绿色版只提示手动下载。
 
 产物在 `dist\`：
 
 - `NiuMa-Workstation-<版本>-setup.exe`
 - `NiuMa-Workstation-<版本>-portable.zip`
+- `latest.json`
 
 ## 9. 测试与回归基线
 
 - `cargo test -p niu_ma_workstation_core`：11 个领域测试（分区、排序、项目排序、顺延、进度、状态联动、周统计、周边界）。
-- `cargo test -p niu_ma_workstation`：21 个应用测试（存储往返、v1→v2 迁移、备份保留 30 份、每日备份去重、旧数据目录迁移、种子回归、清理快照、新项目默认值、已完成区间筛选、项目关联循环、JSON 往返）。
+- `cargo test -p niu_ma_workstation`：29 个应用测试（存储往返、v1→v2 迁移、备份保留 30 份、每日备份去重、旧数据目录迁移、种子回归、清理快照、新项目默认值、已完成区间筛选、项目关联循环、JSON 往返、更新清单解析与版本比较、SHA-256 校验）。
 - 种子数据的断言值就是产品口径：本周完成 11 / 完成率 84.6% / 逾期 2 / 卡住 1 / 顺延 4，改动领域逻辑时必须保持这些数字。
 
 ## 10. 约定与已知限制

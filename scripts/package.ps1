@@ -1,8 +1,10 @@
 # 一键出两个发布物：
 #   dist\NiuMa-Workstation-<ver>-setup.exe      安装版（Inno Setup）
 #   dist\NiuMa-Workstation-<ver>-portable.zip   绿色版（解压即用，数据存 exe 旁的 data\）
+# 若存在安装版，还会生成 dist\latest.json：上传到 GitHub Release 后供应用内“检查更新”使用。
 param(
-    [switch]$SkipBuild
+    [switch]$SkipBuild,
+    [string]$Notes = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -50,6 +52,23 @@ if ($iscc) {
     if ($LASTEXITCODE -ne 0) { throw "ISCC 打包安装版失败" }
 } else {
     Write-Warning "未找到 Inno Setup（ISCC.exe），已跳过安装版，仅生成绿色版"
+}
+
+# 更新清单：安装版存在时生成，随 GitHub Release 一起上传
+if (Test-Path $setupExe) {
+    $hash = (Get-FileHash $setupExe -Algorithm SHA256).Hash.ToLower()
+    $size = (Get-Item $setupExe).Length
+    $url = "https://github.com/tq57/NiuMa-Workstation/releases/latest/download/NiuMa-Workstation-$version-setup.exe"
+    $manifest = [ordered]@{
+        version   = $version
+        notes     = $Notes
+        installer = [ordered]@{
+            url    = $url
+            sha256 = $hash
+            size   = $size
+        }
+    }
+    $manifest | ConvertTo-Json -Depth 4 | Set-Content (Join-Path $dist "latest.json") -Encoding UTF8
 }
 
 Get-ChildItem $dist -Filter "NiuMa-Workstation-$version-*" |

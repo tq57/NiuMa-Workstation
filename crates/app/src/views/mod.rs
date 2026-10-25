@@ -5,6 +5,7 @@ pub(crate) mod notes;
 pub(crate) mod projects;
 pub(crate) mod review;
 pub(crate) mod today;
+pub(crate) mod update;
 
 use chrono::{Datelike, NaiveDate};
 use gpui_kit::*;

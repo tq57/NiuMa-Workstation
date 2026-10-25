@@ -42,3 +42,11 @@ Name: "{autodesktop}\{#AppName}"; Filename: "{app}\{#AppExeName}"; Tasks: deskto
 
 [Run]
 Filename: "{app}\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+; 应用内更新：应用以 /AUTOUPDATE=1 调起安装包，装完自动拉起新版本
+Filename: "{app}\{#AppExeName}"; Flags: nowait; Check: IsAutoUpdate
+
+[Code]
+function IsAutoUpdate: Boolean;
+begin
+  Result := ExpandConstant('{param:AUTOUPDATE|0}') = '1';
+end;
