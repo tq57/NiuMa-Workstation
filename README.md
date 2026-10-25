@@ -54,7 +54,9 @@ pwsh -File scripts\package.ps1
 - **安装版**：点「下载更新」→ 自动校验 SHA-256 → 点「安装并重启」；安装前自动备份数据库，装完自动拉起新版本。
 - **绿色版**：只提示并打开下载页，手动替换程序文件，数据目录不受影响。
 
-发布新版本：改 `crates\app\Cargo.toml` 的 `version`，执行 `pwsh -File scripts\package.ps1`，把 `dist\` 里的 `NiuMa-Workstation-<版本>-setup.exe`、`-portable.zip` 和 `latest.json` 一起上传到 GitHub Release，并发布为最新的正式版（非草稿 / 非预发布）。
+发布新版本（自动）：改 `crates\app\Cargo.toml` 的 `version` 并提交，推一个 `v<版本>` 标签（如 `git tag v0.2.0 && git push origin v0.2.0`），GitHub Actions 会自动跑测试、打包，并把 `setup.exe`、`portable.zip`、`latest.json` 发到 Release。
+
+手动发布：执行 `pwsh -File scripts\package.ps1`，把 `dist\` 里的三个文件上传到 GitHub Release，并发布为最新的正式版（非草稿 / 非预发布）。
 
 ## 数据放在哪
 

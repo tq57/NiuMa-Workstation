@@ -1,0 +1,98 @@
+# 推送 v<版本> 标签（或手动触发）后自动：测试 → 打包 → 发布 GitHub Release。
+# 产物：安装版、绿色版 zip、latest.json（应用内检查更新读取）。
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 读取并校验版本号
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String -Path "crates\app\Cargo.toml" -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1
+          if (-not $match) { throw "读不到 crates\app\Cargo.toml 里的版本号" }
+          $version = $match.Matches[0].Groups[1].Value
+          "version=$version" >> $env:GITHUB_OUTPUT
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $tag = "${{ github.ref_name }}"
+            if ($tag -ne "v$version") { throw "标签 $tag 与 Cargo.toml 版本 v$version 不一致" }
+          }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: 运行测试
+        shell: pwsh
+        run: cargo test --workspace
+
+      - name: 准备 Inno Setup
+        shell: pwsh
+        run: |
+          $candidates = @(
+            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "C:\Program Files\Inno Setup 6\ISCC.exe"
+          )
+          if (-not ($candidates | Where-Object { Test-Path $_ })) {
+            choco install innosetup --no-progress -y
+            if ($LASTEXITCODE -ne 0) { throw "安装 Inno Setup 失败" }
+          }
+
+      - name: 打包
+        shell: pwsh
+        run: ./scripts/package.ps1 -Notes "$(git log -1 --pretty=%s)"
+
+      - name: 校验产物
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          foreach ($f in @(
+            "dist\NiuMa-Workstation-$version-setup.exe",
+            "dist\NiuMa-Workstation-$version-portable.zip",
+            "dist\latest.json"
+          )) {
+            if (-not (Test-Path $f)) { throw "缺少产物 $f" }
+          }
+
+      - name: 发布 GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $tag = "v$version"
+          $files = @(
+            "dist/NiuMa-Workstation-$version-setup.exe",
+            "dist/NiuMa-Workstation-$version-portable.zip",
+            "dist/latest.json"
+          )
+          gh release view $tag 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            # 已存在同名 Release：覆盖上传，保证重复执行也能收敛
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag @files `
+              --title "NiuMa-Workstation v$version" `
+              --generate-notes `
+              --target "${{ github.sha }}"
+          }
+          if ($LASTEXITCODE -ne 0) { throw "发布 GitHub Release 失败" }

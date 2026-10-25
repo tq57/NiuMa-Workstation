@@ -53,7 +53,8 @@ NiuMa-Workstation/
 │     └─ assets/{icon.ico,icon.rc}
 ├─ docs/                          # 设计稿、技术方案、视觉 demo
 ├─ packaging/NiuMa-Workstation.iss      # 安装版脚本
-└─ scripts/package.ps1            # 一键出安装版 + 绿色版
+├─ scripts/package.ps1            # 一键出安装版 + 绿色版
+└─ .github/workflows/release.yml  # 推 v<版本> 标签时自动测试、打包、发布 Release
 ```
 
 ## 4. 分层与数据流
@@ -271,6 +272,8 @@ powershell -ExecutionPolicy Bypass -File scripts\package.ps1
 - `NiuMa-Workstation-<版本>-setup.exe`
 - `NiuMa-Workstation-<版本>-portable.zip`
 - `latest.json`
+
+自动发布：`.github/workflows/release.yml` 在推送 `v<版本>` 标签（或手动触发）后运行——校验标签与 `Cargo.toml` 版本一致、跑全部测试、调用打包脚本，把三个产物发到 GitHub Release；同名 Release 已存在时覆盖上传，重复执行不会失败。
 
 ## 9. 测试与回归基线
 
